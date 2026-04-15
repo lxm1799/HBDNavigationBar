@@ -8,6 +8,9 @@
 #import "UIViewController+HBD.h"
 #import <objc/runtime.h>
 #import "HBDNavigationController.h"
+#import "HBDAppearanceHelper.h"
+#import "HBDNavigationBar.h"
+
 
 @implementation UIViewController (HBD)
 
@@ -120,7 +123,17 @@
     } else {
         self.navigationItem.titleView = nil;
     }
-    if (@available(iOS 16.0, *)) {
+    if (@available(iOS 26.0, *)) {
+        [self.navigationItem setHidesBackButton:hidden];
+        if (hidden) {
+            if (@available(iOS 13.0, *)) {
+                UINavigationBarAppearance *appearance = [HBDAppearanceHelper transparentAppearance];
+                if (self.navigationController && [self.navigationController.navigationBar isKindOfClass:[HBDNavigationBar class]]) {
+                    [HBDAppearanceHelper applyAppearance:appearance toNavigationBar:self.navigationController.navigationBar];
+                }
+            }
+        }
+    } else if (@available(iOS 16.0, *)) {
         [self.navigationItem setHidesBackButton:hidden];
     } else {
         if (hidden) {

@@ -1,13 +1,7 @@
-//
-//  HBDNavigationController.m
-//  HBDNavigationBar
-//
-//  Created by Listen on 2018/3/23.
-//
-
 #import "HBDNavigationController.h"
 #import "UIViewController+HBD.h"
 #import "HBDNavigationBar.h"
+#import "HBDAppearanceHelper.h"
 
 static CGFloat HBDHairlineWidthForView(UIView *view) {
     if (@available(iOS 13.0, *)) {
@@ -45,12 +39,10 @@ BOOL shouldShowFake(UIViewController *vc, UIViewController *from, UIViewControll
     }
 
     if (from.hbd_computedBarImage && to.hbd_computedBarImage && isImageEqual(from.hbd_computedBarImage, to.hbd_computedBarImage)) {
-        // have the same image
         return from.hbd_barAlpha != to.hbd_barAlpha;
     }
 
     if (!from.hbd_computedBarImage && !to.hbd_computedBarImage && [from.hbd_computedBarTintColor.description isEqual:to.hbd_computedBarTintColor.description]) {
-        // no images and the colors are the same
         return from.hbd_barAlpha != to.hbd_barAlpha;
     }
 
@@ -134,6 +126,13 @@ void printViewHierarchy(UIView *view, NSString *prefix) {
     }
 }
 
+static BOOL HBDIsiOS26OrLater(void) {
+    if (@available(iOS 26.0, *)) {
+        return YES;
+    }
+    return NO;
+}
+
 @interface HBDNavigationControllerDelegate : UIScreenEdgePanGestureRecognizer <UINavigationControllerDelegate, UIGestureRecognizerDelegate>
 
 @property(nonatomic, weak) id <UINavigationControllerDelegate> navDelegate;
@@ -162,6 +161,8 @@ void printViewHierarchy(UIView *view, NSString *prefix) {
 @property(nonatomic, strong) UIImageView *toFakeShadow;
 @property(nonatomic, strong) UIImageView *fromFakeImageView;
 @property(nonatomic, strong) UIImageView *toFakeImageView;
+@property(nonatomic, strong) UIView *iOS26_fromFakeBar;
+@property(nonatomic, strong) UIView *iOS26_toFakeBar;
 @property(nonatomic, weak) UIViewController *poppingViewController;
 @property(nonatomic, strong) HBDNavigationControllerDelegate *delegateProxy;
 
@@ -206,9 +207,6 @@ void printViewHierarchy(UIView *view, NSString *prefix) {
 
     if (nav.viewControllers.count > 1) {
         UIViewController *topVC = nav.topViewController;
-        // 先判断hbd_swipeBackEnabled再判断hbd_backInteractive，
-        // 可以解决当用户已经将hbd_swipeBackEnabled设置为NO时，并且重写了hbd_backInteractive的getter方法，用手势返回时，先调用hbd_backInteractive的getter方法的问题
-        // 应该是已经将hbd_swipeBackEnabled设置为NO后，用户再进行侧滑手势时，不触发任何操作。
         return topVC.hbd_swipeBackEnabled && topVC.hbd_backInteractive;
     }
     return NO;
@@ -268,7 +266,15 @@ void printViewHierarchy(UIView *view, NSString *prefix) {
         UIViewController *from = [coordinator viewControllerForKey:UITransitionContextFromViewControllerKey];
         UIViewController *to = [coordinator viewControllerForKey:UITransitionContextToViewControllerKey];
         if (pan.state == UIGestureRecognizerStateBegan || pan.state == UIGestureRecognizerStateChanged) {
-            nav.navigationBar.tintColor = blendColor(from.hbd_tintColor, to.hbd_tintColor, coordinator.percentComplete);
+            if (HBDIsiOS26OrLater()) {
+                // iOS 26: fake bars are overlaid on VC views and move naturally with the transition
+            } else {
+                nav.navigationBar.tintColor = blendColor(from.hbd_tintColor, to.hbd_tintColor, coordinator.percentComplete);
+            }
+        } else if (pan.state == UIGestureRecognizerStateEnded || pan.state == UIGestureRecognizerStateCancelled) {
+            if (HBDIsiOS26OrLater()) {
+                // iOS 26: completion handler in showViewController:withCoordinator: will restore correct appearance
+            }
         }
     }
 }
@@ -356,12 +362,10 @@ void printViewHierarchy(UIView *view, NSString *prefix) {
     UIViewController *to = [coordinator viewControllerForKey:UITransitionContextToViewControllerKey];
 
     if (@available(iOS 12.0, *)) {
-        // Fix a system bug https://github.com/listenzz/HBDNavigationBar/issues/35
         [self resetButtonLabelInNavBar:self.nav.navigationBar];
     }
 
     if (self.nav.poppingViewController) {
-        // Inspired by QMUI
         UILabel *backButtonLabel = self.nav.navigationBar.backButtonLabel;
         if (backButtonLabel) {
             backButtonLabel.hbd_specifiedTextColor = backButtonLabel.textColor;
@@ -374,7 +378,6 @@ void printViewHierarchy(UIView *view, NSString *prefix) {
         }];
     }
 
-    [self.nav updateNavigationBarStyleForViewController:viewController];
     BOOL shouldAnimateTabBar = [self shouldAnimateTabBarFrom:from to:to];
     if (shouldAnimateTabBar) {
         [self prepareTabBarForTransitionFrom:from to:to];
@@ -383,13 +386,10 @@ void printViewHierarchy(UIView *view, NSString *prefix) {
     [coordinator animateAlongsideTransition:^(id <UIViewControllerTransitionCoordinatorContext> _Nonnull context) {
         BOOL shouldFake = shouldShowFake(viewController, from, to);
         if (shouldFake) {
-            // title attributes, button tint color, barStyle
             [self.nav updateNavigationBarTintColorForViewController:viewController];
 
-            // background alpha, background color, shadow image alpha
             [self.nav showFakeBarFrom:from to:to];
 
-            // 转场涉及旋转时不应用 safe area 补偿，避免布局错乱
             BOOL noRotation = CGAffineTransformIsIdentity(context.targetTransform);
             if (noRotation) {
                 CGFloat expectedTopInset = CGRectGetMaxY(self.nav.navigationBar.frame);
@@ -399,11 +399,15 @@ void printViewHierarchy(UIView *view, NSString *prefix) {
         } else {
             [self.nav updateNavigationBarForViewController:viewController];
             if (@available(iOS 13.0, *)) {
-                if (to == viewController) {
-                    self.nav.navigationBar.scrollEdgeAppearance.backgroundColor = viewController.hbd_computedBarTintColor;
-                    self.nav.navigationBar.scrollEdgeAppearance.backgroundImage = viewController.hbd_computedBarImage;
-                    self.nav.navigationBar.standardAppearance.backgroundColor = viewController.hbd_computedBarTintColor;
-                    self.nav.navigationBar.standardAppearance.backgroundImage = viewController.hbd_computedBarImage;
+                if (HBDIsiOS26OrLater()) {
+                    // iOS 26: appearance is handled by updateNavigationBarForViewController
+                } else {
+                    if (to == viewController) {
+                        self.nav.navigationBar.scrollEdgeAppearance.backgroundColor = viewController.hbd_computedBarTintColor;
+                        self.nav.navigationBar.scrollEdgeAppearance.backgroundImage = viewController.hbd_computedBarImage;
+                        self.nav.navigationBar.standardAppearance.backgroundColor = viewController.hbd_computedBarTintColor;
+                        self.nav.navigationBar.standardAppearance.backgroundImage = viewController.hbd_computedBarImage;
+                    }
                 }
             }
         }
@@ -419,15 +423,18 @@ void printViewHierarchy(UIView *view, NSString *prefix) {
                 [self.nav updateNavigationBarForViewController:from];
             }
         } else {
-            // `to` != `viewController` when present
             [self.nav updateNavigationBarForViewController:viewController];
         }
 
         if (@available(iOS 13.0, *)) {
-            self.nav.navigationBar.scrollEdgeAppearance.backgroundColor = UIColor.clearColor;
-            self.nav.navigationBar.scrollEdgeAppearance.backgroundImage = nil;
-            self.nav.navigationBar.standardAppearance.backgroundColor = UIColor.clearColor;
-            self.nav.navigationBar.standardAppearance.backgroundImage = nil;
+            if (HBDIsiOS26OrLater()) {
+                // iOS 26: appearance is already correctly set by updateNavigationBarForViewController
+            } else {
+                self.nav.navigationBar.scrollEdgeAppearance.backgroundColor = UIColor.clearColor;
+                self.nav.navigationBar.scrollEdgeAppearance.backgroundImage = nil;
+                self.nav.navigationBar.standardAppearance.backgroundColor = UIColor.clearColor;
+                self.nav.navigationBar.standardAppearance.backgroundImage = nil;
+            }
         }
 
         if (shouldAnimateTabBar) {
@@ -489,7 +496,7 @@ void printViewHierarchy(UIView *view, NSString *prefix) {
     if (@available(iOS 12.0, *)) {
         for (UIView *view in navBar.subviews) {
             NSString *viewName = [[[view classForCoder] description] stringByReplacingOccurrencesOfString:@"_" withString:@""];
-            if ([viewName isEqualToString:@"UINavigationBarContentView"]) {
+            if ([viewName isEqualToString:@"UINavigationBarContentView"] || [viewName containsString:@"ContentView"]) {
                 [self resetButtonLabelInView:view];
                 break;
             }
@@ -600,7 +607,6 @@ void printViewHierarchy(UIView *view, NSString *prefix) {
     if (@available(iOS 13.0, *)) {
         UINavigationBarAppearance *scrollEdgeAppearance = [[UINavigationBarAppearance alloc] init];
         [scrollEdgeAppearance configureWithTransparentBackground];
-        // scrollEdgeAppearance.backgroundEffect = nil;
         scrollEdgeAppearance.backgroundColor = UIColor.clearColor;
         scrollEdgeAppearance.shadowColor = UIColor.clearColor;
         [scrollEdgeAppearance setBackIndicatorImage:[UINavigationBar appearance].backIndicatorImage transitionMaskImage:[UINavigationBar appearance].backIndicatorTransitionMaskImage];
@@ -636,7 +642,6 @@ void printViewHierarchy(UIView *view, NSString *prefix) {
         self.poppingViewController = self.topViewController;
     }
     UIViewController *vc = [super popViewControllerAnimated:animated];
-    // vc != self.topViewController
     [self fixClickBackIssue];
     return vc;
 }
@@ -664,7 +669,6 @@ void printViewHierarchy(UIView *view, NSString *prefix) {
         return;
     }
     if (@available(iOS 11.0, *)) {
-        // fix：ios 11，12，当前后两个页面的 barStyle 不一样时，点击返回按钮返回，前一个页面的标题颜色响应迟缓或不响应
         id <UIViewControllerTransitionCoordinator> coordinator = self.transitionCoordinator;
         if (!(coordinator && coordinator.interactive)) {
             self.navigationBar.barStyle = self.topViewController.hbd_barStyle;
@@ -677,7 +681,6 @@ void printViewHierarchy(UIView *view, NSString *prefix) {
     if (@available(iOS 11, *)) {
         // empty
     } else {
-        // Workaround for >= iOS7.1. Thanks to @boliva - http://stackoverflow.com/posts/comments/34452906
         [navBar.subviews enumerateObjectsUsingBlock:^(__kindof UIView *_Nonnull subview, NSUInteger idx, BOOL *_Nonnull stop) {
             if (subview.alpha < 1.0) {
                 [UIView animateWithDuration:.25 animations:^{
@@ -687,6 +690,8 @@ void printViewHierarchy(UIView *view, NSString *prefix) {
         }];
     }
 }
+
+#pragma mark - Update Navigation Bar
 
 - (void)updateNavigationBarForViewController:(UIViewController *)vc {
     [self updateNavigationBarStyleForViewController:vc];
@@ -704,12 +709,28 @@ void printViewHierarchy(UIView *view, NSString *prefix) {
     self.navigationBar.titleTextAttributes = vc.hbd_titleTextAttributes;
     [self.navigationBar hbd_setContentHidden:vc.hbd_barHidden];
     if (@available(iOS 13.0, *)) {
-        self.navigationBar.scrollEdgeAppearance.titleTextAttributes = vc.hbd_titleTextAttributes;
-        self.navigationBar.standardAppearance.titleTextAttributes = vc.hbd_titleTextAttributes;
+        if (HBDIsiOS26OrLater()) {
+            // iOS 26: titleTextAttributes is handled by hbd_applyAppearance
+        } else {
+            self.navigationBar.scrollEdgeAppearance.titleTextAttributes = vc.hbd_titleTextAttributes;
+            self.navigationBar.standardAppearance.titleTextAttributes = vc.hbd_titleTextAttributes;
+        }
     }
 }
 
 - (void)updateNavigationBarAlphaForViewController:(UIViewController *)vc {
+    if (HBDIsiOS26OrLater()) {
+        if (@available(iOS 13.0, *)) {
+            UINavigationBarAppearance *appearance = [HBDAppearanceHelper appearanceWithBarTintColor:vc.hbd_computedBarTintColor
+                                                                                    backgroundImage:vc.hbd_computedBarImage
+                                                                                         barAlpha:vc.hbd_barAlpha
+                                                                                    shadowHidden:vc.hbd_barShadowHidden
+                                                                                titleAttributes:vc.hbd_titleTextAttributes];
+            [HBDAppearanceHelper applyAppearance:appearance toNavigationBar:self.navigationBar];
+        }
+        return;
+    }
+
     if (vc.hbd_computedBarImage) {
         self.navigationBar.fakeView.alpha = 0;
         self.navigationBar.backgroundImageView.alpha = vc.hbd_barAlpha;
@@ -719,20 +740,42 @@ void printViewHierarchy(UIView *view, NSString *prefix) {
     }
 
     if (vc.hbd_barAlpha == 0) {
-        self.navigationBar.hbd_backgroundView.layer.mask = [CALayer new];
+        UIView *bgView = self.navigationBar.hbd_backgroundView;
+        if (bgView) {
+            bgView.layer.mask = [CALayer new];
+        }
     } else {
-        self.navigationBar.hbd_backgroundView.layer.mask = nil;
+        UIView *bgView = self.navigationBar.hbd_backgroundView;
+        if (bgView) {
+            bgView.layer.mask = nil;
+        }
     }
 
     self.navigationBar.shadowImageView.alpha = vc.hbd_computedBarShadowAlpha;
 }
 
 - (void)updateNavigationBarBackgroundForViewController:(UIViewController *)vc {
+    if (HBDIsiOS26OrLater()) {
+        // iOS 26: background is handled by updateNavigationBarAlphaForViewController via Appearance
+        return;
+    }
     self.navigationBar.barTintColor = vc.hbd_computedBarTintColor;
     self.navigationBar.backgroundImageView.image = vc.hbd_computedBarImage;
 }
 
+#pragma mark - Fake Bar (Transition)
+
 - (void)showFakeBarFrom:(UIViewController *)from to:(UIViewController *_Nonnull)to {
+    if (HBDIsiOS26OrLater()) {
+        [UIView setAnimationsEnabled:NO];
+        if (@available(iOS 13.0, *)) {
+            UINavigationBarAppearance *transparentAppearance = [HBDAppearanceHelper transparentAppearance];
+            [HBDAppearanceHelper applyAppearance:transparentAppearance toNavigationBar:self.navigationBar];
+        }
+        [self iOS26_showFakeBarFrom:from to:to];
+        [UIView setAnimationsEnabled:YES];
+        return;
+    }
     [UIView setAnimationsEnabled:NO];
     self.navigationBar.fakeView.alpha = 0;
     self.navigationBar.shadowImageView.alpha = 0;
@@ -828,6 +871,49 @@ void printViewHierarchy(UIView *view, NSString *prefix) {
     return _toFakeShadow;
 }
 
+- (void)iOS26_showFakeBarFrom:(UIViewController *)from to:(UIViewController *)to {
+    CGRect barFrame = [self fakeBarFrameForViewController:from];
+
+    if (!self.iOS26_fromFakeBar) {
+        self.iOS26_fromFakeBar = [[UIView alloc] init];
+        self.iOS26_fromFakeBar.userInteractionEnabled = NO;
+    }
+    UIColor *fromColor = from.hbd_computedBarImage ? nil : from.hbd_computedBarTintColor;
+    self.iOS26_fromFakeBar.backgroundColor = fromColor;
+    self.iOS26_fromFakeBar.alpha = from.hbd_barAlpha;
+    self.iOS26_fromFakeBar.frame = barFrame;
+    [from.view addSubview:self.iOS26_fromFakeBar];
+
+    if (from.hbd_computedBarImage) {
+        UIImageView *fromImgView = [[UIImageView alloc] initWithImage:from.hbd_computedBarImage];
+        fromImgView.contentMode = UIViewContentModeScaleToFill;
+        fromImgView.frame = barFrame;
+        fromImgView.alpha = from.hbd_barAlpha;
+        fromImgView.userInteractionEnabled = NO;
+        [self.iOS26_fromFakeBar addSubview:fromImgView];
+    }
+
+    if (!self.iOS26_toFakeBar) {
+        self.iOS26_toFakeBar = [[UIView alloc] init];
+        self.iOS26_toFakeBar.userInteractionEnabled = NO;
+    }
+    CGRect toBarFrame = [self fakeBarFrameForViewController:to];
+    UIColor *toColor = to.hbd_computedBarImage ? nil : to.hbd_computedBarTintColor;
+    self.iOS26_toFakeBar.backgroundColor = toColor;
+    self.iOS26_toFakeBar.alpha = to.hbd_barAlpha;
+    self.iOS26_toFakeBar.frame = toBarFrame;
+    [to.view addSubview:self.iOS26_toFakeBar];
+
+    if (to.hbd_computedBarImage) {
+        UIImageView *toImgView = [[UIImageView alloc] initWithImage:to.hbd_computedBarImage];
+        toImgView.contentMode = UIViewContentModeScaleToFill;
+        toImgView.frame = toBarFrame;
+        toImgView.alpha = to.hbd_barAlpha;
+        toImgView.userInteractionEnabled = NO;
+        [self.iOS26_toFakeBar addSubview:toImgView];
+    }
+}
+
 - (void)clearFake {
     [_fromFakeBar removeFromSuperview];
     [_toFakeBar removeFromSuperview];
@@ -841,6 +927,11 @@ void printViewHierarchy(UIView *view, NSString *prefix) {
     _toFakeShadow = nil;
     _fromFakeImageView = nil;
     _toFakeImageView = nil;
+
+    [_iOS26_fromFakeBar removeFromSuperview];
+    [_iOS26_toFakeBar removeFromSuperview];
+    _iOS26_fromFakeBar = nil;
+    _iOS26_toFakeBar = nil;
 }
 
 - (CGRect)fakeBarFrameForViewController:(UIViewController *)vc {
